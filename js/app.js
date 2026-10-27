@@ -318,9 +318,19 @@
     window.renderDoc = async (html, css) => {
       const tpl = document.createElement('template');
       tpl.innerHTML = html;
+      // Give every image its intrinsic size up front: Paged.js measures pages before images finish
+      // loading, and a 0px-tall image makes it overfill (and clip) the page.
       await Promise.all([...tpl.content.querySelectorAll('img')].map((img) => new Promise((resolve) => {
         const probe = new Image();
-        probe.onload = probe.onerror = resolve;
+        probe.onload = () => {
+          if (!img.hasAttribute('width') && !img.hasAttribute('height')) {
+            img.setAttribute('width', probe.naturalWidth);
+            img.setAttribute('height', probe.naturalHeight);
+            img.style.height = 'auto';
+          }
+          resolve();
+        };
+        probe.onerror = resolve;
         probe.src = img.getAttribute('src');
       })));
       const flow = await new Paged.Previewer().preview(tpl.content, [{ 'https://md-to-pdf.local/document.css': css }], document.getElementById('out'));

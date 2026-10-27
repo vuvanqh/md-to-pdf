@@ -243,6 +243,12 @@
     return { html: root.outerHTML, outline: env.outline || [] };
   }
 
+  const UNIT_PX = { px: 1, in: 96, cm: 96 / 2.54, mm: 96 / 25.4, pt: 96 / 72 };
+  const toPx = (v) => {
+    const m = /^([\d.]+)(px|in|cm|mm|pt)$/.exec(v);
+    return m ? parseFloat(m[1]) * UNIT_PX[m[2]] : 0;
+  };
+
   const cssString = (s) => '"' + String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/[\r\n]+/g, ' ') + '"';
 
   function slotContent(band, side, ctx) {
@@ -277,15 +283,19 @@
     const s = settings;
     const m = s.margin;
     const ctx = { filename: filenameEl.value || 'document.md', title: outline[0]?.text || filenameEl.value };
-    const font = '-apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", "Ubuntu", "Droid Sans", sans-serif';
     let boxes = '';
     const firstOff = [];
     for (const [pos, band] of [['top', s.header], ['bottom', s.footer]]) {
       if (!band.on) continue;
+      // Chromium draws yzane's header/footer templates in Arial, ~20px from the paper edge.
+      const room = toPx(pos === 'top' ? m.top : m.bottom);
+      const place = room >= 34
+        ? `vertical-align: ${pos === 'top' ? 'top; padding-top' : 'bottom; padding-bottom'}: 19px;`
+        : 'vertical-align: middle;';
       for (const side of ['left', 'center', 'right']) {
         const content = slotContent(band, side, ctx);
         if (!content) continue;
-        boxes += `@${pos}-${side} { content: ${content}; font-family: ${font}; font-size: 9px; color: #000; text-align: ${side}; }\n`;
+        boxes += `@${pos}-${side} { content: ${content}; font-family: Arial, Helvetica, sans-serif; font-size: 9px; line-height: 1.15; color: #000; text-align: ${side}; ${place} }\n`;
         firstOff.push(`@${pos}-${side} { content: none; }`);
       }
     }

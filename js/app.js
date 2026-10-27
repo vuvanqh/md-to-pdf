@@ -3,14 +3,15 @@
 
   const CDN = {
     paged: 'https://cdn.jsdelivr.net/npm/pagedjs@0.4.3/dist/paged.js',
-    mermaid: 'https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js',
+    mermaid: 'https://cdn.jsdelivr.net/npm/mermaid@12.2.0/dist/mermaid.min.js',
     katex: 'https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js',
     katexAuto: 'https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/contrib/auto-render.min.js',
     katexCss: 'https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css',
   };
 
-  // Page sizes in CSS px (96 dpi), used for "fit to width".
-  const PAPER = { A4: [794, 1123], Letter: [816, 1056], A5: [559, 794], Legal: [816, 1344] };
+  // Paper sizes in pt (portrait), as Chromium/Puppeteer produce them (A4 comes out as 595.92 x 841.92).
+  const PAPER = { A4: [595.92, 841.92], Letter: [612, 792], A5: [419.76, 595.44], Legal: [612, 1008] };
+  const PT_PX = 4 / 3;
 
   const $ = (s) => document.querySelector(s);
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -73,6 +74,8 @@
     breaks: false,
     highlight(str, lang) {
       if (lang && lang.match(/\bmermaid\b/i)) {
+        // yzane inserts the source raw and unescaped, so the browser parses it as HTML before mermaid
+        // reads it. Keep it aside here so the sanitiser below doesn't "fix" it.
         mermaidSources.push(str);
         return `<div class="mermaid" data-mermaid="${mermaidSources.length - 1}"></div>`;
       }
@@ -155,28 +158,49 @@
   const mermaidCache = new Map();
   let mermaidSeq = 0;
 
-  async function renderMermaid(code) {
-    if (mermaidCache.has(code)) return mermaidCache.get(code);
-    await loadScript(CDN.mermaid);
-    if (!renderMermaid.ready) {
-      window.mermaid.initialize({ startOnLoad: false, theme: 'default' });
-      renderMermaid.ready = true;
-    }
-    const id = 'mmd' + (++mermaidSeq);
-    let out;
+  // Mermaid sizes diagrams from text it measures in the page, so it runs in a hidden 800px-wide frame
+  // styled like yzane's page (Puppeteer's default window), with each diagram inside <pre><code>.
+  let mermaidFrame;
+  function loadMermaidFrame() {
+    if (mermaidFrame) return mermaidFrame;
+    const f = document.createElement('iframe');
+    f.setAttribute('aria-hidden', 'true');
+    f.style.cssText = 'position:absolute;left:-10000px;top:0;width:800px;height:600px;border:0;visibility:hidden';
+    const css = window.YZANE_CSS.replace(/\.markdown-body(\s*\{)/g, 'body$1');
+    mermaidFrame = new Promise((resolve, reject) => {
+      f.onload = () => {
+        if (!f.contentWindow.mermaid) return reject(new Error('Could not load ' + CDN.mermaid));
+        f.contentWindow.mermaid.initialize({ startOnLoad: false, theme: 'default' });
+        resolve(f.contentWindow);
+      };
+      f.srcdoc = `<!doctype html><html><head><meta charset="utf-8"><style>${css}</style><script src="${CDN.mermaid}"><\/script></head><body></body></html>`;
+    });
+    document.body.appendChild(f);
+    return mermaidFrame;
+  }
+
+  // Renders a <div class="mermaid"> the way yzane's page does (mermaid.run on the parsed element), so
+  // diagrams that break there — e.g. a raw <<Interface>> read as an HTML tag — break here too.
+  async function renderMermaid(innerHtml) {
+    if (mermaidCache.has(innerHtml)) return mermaidCache.get(innerHtml);
+    const win = await loadMermaidFrame();
+    const pre = win.document.createElement('pre');
+    pre.innerHTML = `<code><div class="mermaid" id="mmd${++mermaidSeq}"></div></code>`;
+    const el = pre.querySelector('.mermaid');
+    el.innerHTML = innerHtml;
+    win.document.body.appendChild(pre);
     try {
-      out = (await window.mermaid.render(id, code)).svg;
-    } catch (e) {
-      out = `<span class="mermaid-error">Mermaid error: ${esc(e.message || e)}</span>`;
-      document.getElementById('d' + id)?.remove();
-    }
-    mermaidCache.set(code, out);
+      await win.mermaid.run({ nodes: [el] });
+    } catch (e) { /* mermaid has already drawn its error diagram into el */ }
+    const out = el.innerHTML;
+    pre.remove();
+    mermaidCache.set(innerHtml, out);
     return out;
   }
 
   async function buildHtml(src) {
-    mermaidSources = [];
     const env = {};
+    mermaidSources = [];
     const raw = md.render(src, env);
     // yzane's default "gfm" sanitising drops <style>, <script>, <iframe> & co.
     const clean = DOMPurify.sanitize(raw, { FORBID_TAGS: ['style', 'script', 'iframe', 'object', 'embed', 'form'], ADD_ATTR: ['target'] });
@@ -220,8 +244,11 @@
     updateImageBadge();
 
     for (const el of root.querySelectorAll('[data-mermaid]')) {
-      el.innerHTML = await renderMermaid(mermaidSources[Number(el.dataset.mermaid)]);
+      el.innerHTML = mermaidSources[Number(el.dataset.mermaid)]; // inert template: nothing runs
       el.removeAttribute('data-mermaid');
+      el.querySelectorAll('script, iframe, object, embed, style').forEach((n) => n.remove());
+      el.querySelectorAll('*').forEach((n) => [...n.attributes].forEach((a) => { if (/^on/i.test(a.name)) n.removeAttribute(a.name); }));
+      el.innerHTML = await renderMermaid(el.innerHTML);
     }
 
     if (/\$|\\\(|\\\[/.test(src)) {
@@ -279,23 +306,47 @@
     }
   }
 
-  function docCss(outline) {
+  function paperPx() {
+    const [w, h] = (PAPER[settings.size] || PAPER.A4).map((pt) => pt * PT_PX);
+    return settings.orientation === 'landscape' ? [h, w] : [w, h];
+  }
+
+  // Chromium rounds page margins down to whole CSS pixels.
+  const marginPx = (side) => Math.floor(toPx(settings.margin[side]));
+
+  // Chromium shrinks the whole document (up to 2x) when some content is wider than the page, but
+  // keeps the header/footer at their real size. We emulate that by laying out pages `scale` times
+  // larger and zooming them back down to the paper size.
+  function contentWidthPx() {
+    return paperPx()[0] - marginPx('left') - marginPx('right');
+  }
+
+  function printCss(scale) {
+    if (scale === 1) return '';
+    const [w, h] = paperPx();
+    // Only the paper size: the pages are `scale` times wider than it, so Chromium's print shrinks them to
+    // fit by exactly that factor, the same mechanism that shrinks yzane's output.
+    return `@media print { @page { size: ${w}px ${h}px; margin: 0; } }`;
+  }
+
+  function docCss(outline, scale = 1) {
     const s = settings;
-    const m = s.margin;
+    const [pw, ph] = paperPx();
+    const m = Object.fromEntries(Object.keys(s.margin).map((k) => [k, marginPx(k) * scale + 'px']));
     const ctx = { filename: filenameEl.value || 'document.md', title: outline[0]?.text || filenameEl.value };
     let boxes = '';
     const firstOff = [];
     for (const [pos, band] of [['top', s.header], ['bottom', s.footer]]) {
       if (!band.on) continue;
       // Chromium draws yzane's header/footer templates in Arial, ~20px from the paper edge.
-      const room = toPx(pos === 'top' ? m.top : m.bottom);
+      const room = toPx(pos === 'top' ? s.margin.top : s.margin.bottom);
       const place = room >= 34
-        ? `vertical-align: ${pos === 'top' ? 'top; padding-top' : 'bottom; padding-bottom'}: 19px;`
+        ? `vertical-align: ${pos === 'top' ? 'top; padding-top' : 'bottom; padding-bottom'}: ${19 * scale}px;`
         : 'vertical-align: middle;';
       for (const side of ['left', 'center', 'right']) {
         const content = slotContent(band, side, ctx);
         if (!content) continue;
-        boxes += `@${pos}-${side} { content: ${content}; font-family: Arial, Helvetica, sans-serif; font-size: 9px; line-height: 1.15; color: #000; text-align: ${side}; ${place} }\n`;
+        boxes += `@${pos}-${side} { content: ${content}; font-family: Arial, Helvetica, sans-serif; font-size: ${9 * scale}px; line-height: 1.15; color: #000; text-align: ${side}; ${place} }\n`;
         firstOff.push(`@${pos}-${side} { content: none; }`);
       }
     }
@@ -303,10 +354,14 @@
       window.YZANE_CSS,
       // Chromium's default 8px body margin, which yzane's printed HTML keeps.
       '.markdown-body { margin: 0 8px; }',
+      // Paged.js makes everything in a page border-box; browsers (and so yzane) default to content-box.
+      '.markdown-body, .markdown-body * { box-sizing: content-box; }',
       '.pb-after { break-after: page; } .pb-before { break-before: page; }',
+      // Chromium's print splits these across pages; for Paged.js a scroll container can never break.
+      // (Code is pre-wrap, so nothing overflows sideways anyway.)
+      'pre { overflow: visible !important; }',
       '.img-missing { display: inline-block; padding: 10px 14px; border: 1px dashed #d14343; border-radius: 4px; color: #d14343; font-size: 12px; }',
-      '.mermaid-error { color: #d14343; font-size: 12px; white-space: pre-wrap; }',
-      `@page { size: ${s.size} ${s.orientation}; margin: ${m.top} ${m.right} ${m.bottom} ${m.left};\n${boxes}}`,
+      `@page { size: ${pw * scale}px ${ph * scale}px; margin: ${m.top} ${m.right} ${m.bottom} ${m.left};\n${boxes}}`,
       s.skipFirst && firstOff.length ? `@page :first { ${firstOff.join(' ')} }` : '',
     ].join('\n');
   }
@@ -323,8 +378,24 @@
       copy.querySelectorAll('[data-ref]').forEach((c) => c.removeAttribute('data-ref'));
       return copy;
     };
+    // Is this freshly rendered element the first thing on its page?
+    const atPageTop = (el) => {
+      for (; el.parentElement; el = el.parentElement) {
+        if (el.parentElement.classList.contains('pagedjs_page_content')) return true;
+        for (let s = el.previousSibling; s; s = s.previousSibling) {
+          if (s.nodeType === 1 || s.textContent.trim()) return false;
+        }
+      }
+      return false;
+    };
+
     Paged.registerHandlers(class extends Paged.Handler {
       renderNode(clone, node) {
+        // Chromium drops the top margin of a block that starts a page after an unforced break.
+        if (clone.nodeType === 1 && clone.parentElement && !clone.dataset.breakBefore && !clone.dataset.previousBreakAfter &&
+            clone.closest('.pagedjs_page')?.dataset.pageNumber !== '1' && atPageTop(clone)) {
+          clone.style.marginTop = '0';
+        }
         if (node.nodeName !== 'TR' || node.parentNode?.nodeName !== 'TBODY') return;
         const table = clone.closest && clone.closest('table');
         const source = node.closest('table');
@@ -334,10 +405,29 @@
         const cols = source.querySelector(':scope > colgroup');
         if (cols && !table.querySelector(':scope > colgroup')) table.insertBefore(copyOf(cols), table.firstChild);
       }
+
+      // In Chromium a box that continues on the next page runs down to the bottom of this one
+      // (visible on code blocks and quotes, which have a background). Paged.js marks the continued
+      // boxes of a page only once the next page is laid out, so stretch the previous page's boxes.
+      finalizePage(pageElement) {
+        const prev = pageElement.previousElementSibling;
+        if (!prev) return;
+        const bottom = prev.querySelector('.pagedjs_page_content').getBoundingClientRect().bottom;
+        prev.querySelectorAll('[data-split-to]').forEach((el) => {
+          if (/^(TABLE|THEAD|TBODY|TR|TD|TH)$/.test(el.nodeName)) return;
+          const cs = getComputedStyle(el);
+          const painted = !/rgba\(0, 0, 0, 0\)|transparent/.test(cs.backgroundColor) || parseFloat(cs.borderLeftWidth) > 0;
+          if (!painted) return;
+          el.style.boxSizing = 'border-box';
+          el.style.minHeight = bottom - el.getBoundingClientRect().top + 'px';
+        });
+      }
     });
 
-    window.renderDoc = async (html, css) => {
-      const tpl = document.createElement('template');
+    let tpl;
+
+    window.prepareDoc = async (html) => {
+      tpl = document.createElement('template');
       tpl.innerHTML = html;
       // Give every image its intrinsic size up front: Paged.js measures pages before images finish
       // loading, and a 0px-tall image makes it overfill (and clip) the page.
@@ -354,7 +444,123 @@
         probe.onerror = resolve;
         probe.src = img.getAttribute('src');
       })));
+    };
+
+    // Chromium's print shrink factor: how much wider than the page the laid-out document is (max 2).
+    window.measureScale = (css, width) => {
+      const style = document.createElement('style');
+      style.textContent = css;
+      const stage = document.createElement('div');
+      stage.style.cssText = `position:absolute;left:0;top:0;width:${width}px;visibility:hidden`;
+      stage.appendChild(tpl.content.cloneNode(true));
+      document.head.appendChild(style);
+      document.body.appendChild(stage);
+      // scrollWidth is rounded to whole pixels, the page width isn't
+      const scale = stage.scrollWidth > Math.ceil(width) ? Math.min(2, stage.scrollWidth / width) : 1;
+      stage.remove();
+      style.remove();
+      return scale;
+    };
+
+    // Chromium slices an image or diagram that is taller than a page across several pages; Paged.js
+    // can't split it and clips it instead. Cut such elements into thin strips Paged.js can break between.
+    const SLICE = 4;
+    const isFirstContent = (n) => {
+      for (let s = n.previousSibling; s; s = s.previousSibling) {
+        if (s.nodeType === 1 || s.textContent.trim()) return false;
+      }
+      return true;
+    };
+    window.sliceTall = (css, width, maxHeight) => {
+      const top = (root) => [...root.querySelectorAll('svg, img')].filter((el) => !el.parentElement?.closest('svg'));
+      const targets = top(tpl.content);
+      const style = document.createElement('style');
+      style.textContent = css;
+      const stage = document.createElement('div');
+      stage.style.cssText = `position:absolute;left:0;top:0;width:${width}px;visibility:hidden`;
+      stage.appendChild(tpl.content.cloneNode(true));
+      document.head.appendChild(style);
+      document.body.appendChild(stage);
+      // Chromium sizes a table's columns once for the whole table; Paged.js would size each page's
+      // piece separately. Pin the widths of the unbroken table.
+      const tables = [...tpl.content.querySelectorAll('table')];
+      stage.querySelectorAll('table').forEach((t, i) => {
+        const row = t.rows[0];
+        if (!row || t.rows.length < 2) return;
+        const group = document.createElement('colgroup');
+        [...row.cells].forEach((c) => {
+          const col = document.createElement('col');
+          col.style.width = c.getBoundingClientRect().width + 'px';
+          if (c.colSpan > 1) col.span = c.colSpan;
+          group.appendChild(col);
+        });
+        tables[i].insertBefore(group, tables[i].firstChild);
+        tables[i].style.tableLayout = 'fixed';
+        tables[i].style.width = t.getBoundingClientRect().width + 'px';
+      });
+      top(stage).forEach((el, i) => {
+        const r = el.getBoundingClientRect();
+        if (r.height <= maxHeight) return;
+        const target = targets[i];
+        let src;
+        if (el.nodeName === 'IMG') {
+          src = el.getAttribute('src');
+        } else {
+          const svg = target.cloneNode(true);
+          svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+          svg.setAttribute('width', r.width);
+          svg.setAttribute('height', r.height);
+          svg.style.maxWidth = '';
+          src = URL.createObjectURL(new Blob([new XMLSerializer().serializeToString(svg)], { type: 'image/svg+xml' }));
+        }
+        const p = el.parentElement.getBoundingClientRect();
+        const pcs = getComputedStyle(el.parentElement);
+        const wrap = document.createElement('div');
+        wrap.className = 'md-slices';
+        wrap.style.cssText = `width:${r.width}px;margin-left:${r.left - p.left - parseFloat(pcs.paddingLeft) - parseFloat(pcs.borderLeftWidth)}px`;
+        // The first strip is (almost) a full page: like Chromium's unsliced element it moves to the next page
+        // unless it already sits at the very top of one. The rest are thin strips that fill page after page.
+        const first = Math.min(r.height, maxHeight - 2);
+        for (let y = 0; y < r.height; y += y ? SLICE : first) {
+          const strip = document.createElement('div');
+          strip.style.cssText = `height:${Math.min(y ? SLICE : first, r.height - y)}px;overflow:hidden`;
+          const img = document.createElement('img');
+          img.src = src;
+          img.width = r.width;
+          img.height = r.height;
+          img.style.cssText = `display:block;max-width:none;max-height:none;width:${r.width}px;height:${r.height}px;margin-top:${-y}px`;
+          strip.appendChild(img);
+          wrap.appendChild(strip);
+        }
+        // Paged.js copies inline elements (yzane's <pre><code><div>) whole and can't break inside them, so
+        // turn inline ancestors on the way into plain blocks; they only hold the strips, so nothing looks different.
+        for (let a = target.parentElement, sa = el.parentElement; a && !a.classList.contains('markdown-body'); a = a.parentElement, sa = sa.parentElement) {
+          if (getComputedStyle(sa).display !== 'inline' && a.nodeName !== 'CODE') continue;
+          const div = document.createElement('div');
+          [...a.attributes].forEach((at) => div.setAttribute(at.name, at.value));
+          while (a.firstChild) div.appendChild(a.firstChild);
+          a.replaceWith(div);
+          a = div;
+        }
+        // Chromium also moves the outermost block that the element opens along with it to the next page.
+        let block = target;
+        while (isFirstContent(block) && block.parentElement && !block.parentElement.classList.contains('markdown-body')) {
+          block = block.parentElement;
+        }
+        if (block !== target) block.classList.add('pb-before');
+        target.replaceWith(wrap);
+      });
+      stage.remove();
+      style.remove();
+    };
+
+    window.renderDoc = async (css, printCss) => {
       const flow = await new Paged.Previewer().preview(tpl.content, [{ 'https://md-to-pdf.local/document.css': css }], document.getElementById('out'));
+      if (printCss) {
+        const style = document.createElement('style');
+        style.textContent = printCss;
+        document.head.appendChild(style);
+      }
       const pages = {};
       document.querySelectorAll('#out :is(h1,h2,h3,h4,h5,h6)[id]').forEach((h) => {
         const page = h.closest('.pagedjs_page');
@@ -414,21 +620,17 @@
     });
   }
 
-  function pageWidth() {
-    const [w, h] = PAPER[settings.size] || PAPER.A4;
-    return settings.orientation === 'landscape' ? h : w;
-  }
-
   function currentZoom() {
     if (zoom !== 'fit') return zoom;
-    return Math.max(0.25, Math.min(2, (host.clientWidth - 48) / pageWidth()));
+    return Math.max(0.25, Math.min(2, (host.clientWidth - 48) / paperPx()[0]));
   }
 
   function applyZoom(f) {
     const doc = f.contentDocument;
     if (!doc) return;
     const z = currentZoom();
-    doc.documentElement.style.setProperty('--zoom', z);
+    // pages laid out with Chromium's shrink-to-fit are `scale` times larger than the paper
+    doc.documentElement.style.setProperty('--zoom', z / Number(f.dataset.scale || 1));
     doc.documentElement.style.setProperty('--canvas', getComputedStyle(document.documentElement).getPropertyValue('--canvas'));
     $('#zoom-label').textContent = (zoom === 'fit' ? 'Fit · ' : '') + Math.round(z * 100) + '%';
   }
@@ -480,11 +682,16 @@
     setStatus('Rendering', true);
     try {
       const { html, outline: items } = await buildHtml(cm.getValue());
-      const css = docCss(items);
       const back = frames[1 - front];
       await loadFrame(back);
+      const win = back.contentWindow;
+      await win.prepareDoc(html);
+      const scale = win.measureScale(docCss(items), contentWidthPx());
+      back.dataset.scale = scale;
+      const pageContentHeight = paperPx()[1] - marginPx('top') - marginPx('bottom');
+      win.sliceTall(docCss(items, scale), contentWidthPx() * scale, pageContentHeight * scale);
       // Lay out at 100%: CSS zoom during layout skews Paged.js's overflow measurements.
-      const result = await back.contentWindow.renderDoc(html, css);
+      const result = await win.renderDoc(docCss(items, scale), printCss(scale));
       applyZoom(back);
       restoreAnchor(back, getAnchor(frames[front]));
       back.classList.remove('back');
@@ -839,7 +1046,7 @@ def hello():
     const prevTitle = document.title;
     document.title = name;
     f.contentDocument.title = name;
-    toast('In the print dialog choose “Save as PDF”. Keep margins on Default and “Headers and footers” unticked.', 6000);
+    toast('In the print dialog choose “Save as PDF”. Leave Margins and Scale on Default and untick “Headers and footers”.', 6000);
     f.contentWindow.focus();
     f.contentWindow.print();
     document.title = prevTitle;

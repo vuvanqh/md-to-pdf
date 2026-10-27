@@ -459,7 +459,7 @@
       const css = docCss(items);
       const back = frames[1 - front];
       await loadFrame(back);
-      applyZoom(back);
+      // Lay out at 100%: CSS zoom during layout skews Paged.js's overflow measurements.
       const result = await back.contentWindow.renderDoc(html, css);
       applyZoom(back);
       restoreAnchor(back, getAnchor(frames[front]));

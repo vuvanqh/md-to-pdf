@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MD to PDF</title>
+  <meta name="description" content="Live, paginated preview of Markdown as the yzane Markdown PDF extension renders it, with configurable header and footer.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">M↓</span>
+      <span class="brand-name">MD to PDF</span>
+    </div>
+
+    <label class="filename" title="Shown in the header/footer when you pick “File name”, and used as the PDF name">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>
+      <input id="filename" value="document.md" spellcheck="false" aria-label="File name">
+    </label>
+
+    <div class="actions">
+      <button class="btn ghost" id="btn-open" title="Open a .md file (or drop it anywhere)">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+        <span>Open</span>
+      </button>
+      <button class="btn ghost" id="btn-images" title="Add the images your Markdown references (files or a whole folder)">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5-9 9"/></svg>
+        <span>Images</span>
+        <span class="badge" id="img-badge" hidden></span>
+      </button>
+      <button class="btn ghost" id="btn-settings" title="Header, footer and page settings">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>
+        <span>Page setup</span>
+      </button>
+      <button class="btn primary" id="btn-download">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>
+        <span>Download PDF</span>
+      </button>
+    </div>
+    <input type="file" id="file-md" accept=".md,.markdown,.txt,text/markdown" hidden>
+    <input type="file" id="file-img" accept="image/*" multiple hidden>
+    <input type="file" id="file-img-dir" webkitdirectory multiple hidden>
+  </header>
+
+  <main class="workspace" id="workspace">
+    <aside class="outline" id="outline-pane">
+      <div class="pane-head">
+        <span>Outline</span>
+      </div>
+      <nav id="outline" class="outline-list"><p class="muted">Headings appear here.</p></nav>
+    </aside>
+
+    <section class="editor-pane" id="editor-pane">
+      <div class="pane-head">
+        <span>Markdown</span>
+        <button class="chip" id="btn-sync" title="Scroll the preview to the cursor (Ctrl+J)">Show in preview →</button>
+      </div>
+      <div class="editor-host"><textarea id="editor"></textarea></div>
+    </section>
+
+    <div class="splitter" id="splitter" role="separator" aria-orientation="vertical" tabindex="0"></div>
+
+    <section class="preview-pane">
+      <div class="pane-head">
+        <span>Preview <span class="muted" id="page-count"></span></span>
+        <div class="zoom">
+          <span class="status" id="status"></span>
+          <button class="chip icon" id="zoom-out" title="Zoom out">−</button>
+          <button class="chip" id="zoom-label" title="Fit to width">Fit</button>
+          <button class="chip icon" id="zoom-in" title="Zoom in">+</button>
+        </div>
+      </div>
+      <div class="preview-host" id="preview-host"></div>
+    </section>
+
+    <aside class="drawer" id="drawer" aria-hidden="true">
+      <div class="drawer-head">
+        <h2>Page setup</h2>
+        <button class="chip icon" id="drawer-close" title="Close">✕</button>
+      </div>
+      <div class="drawer-body" id="settings"></div>
+    </aside>
+  </main>
+
+  <div class="dropzone" id="dropzone"><div>Drop a .md file or images</div></div>
+  <div class="toast" id="toast" role="status"></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/xml/xml.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/markdown/markdown.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/markdown-it/13.0.2/markdown-it.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
+  <script src="js/yzane-css.js"></script>
+  <script src="js/slug.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

@@ -315,6 +315,27 @@
   // Preview: two iframes, rendered alternately so the visible one never flickers.
   // ---------------------------------------------------------------------------
   function frameMain() {
+    // When a table continues on a new page, Paged.js rebuilds it without its <colgroup> and <thead>.
+    // Put them back, as Chromium repeats the header row too.
+    const copyOf = (el) => {
+      const copy = el.cloneNode(true);
+      copy.removeAttribute('data-ref');
+      copy.querySelectorAll('[data-ref]').forEach((c) => c.removeAttribute('data-ref'));
+      return copy;
+    };
+    Paged.registerHandlers(class extends Paged.Handler {
+      renderNode(clone, node) {
+        if (node.nodeName !== 'TR' || node.parentNode?.nodeName !== 'TBODY') return;
+        const table = clone.closest && clone.closest('table');
+        const source = node.closest('table');
+        if (!table || !source) return;
+        const head = source.querySelector(':scope > thead');
+        if (head && !table.querySelector(':scope > thead')) table.insertBefore(copyOf(head), table.firstChild);
+        const cols = source.querySelector(':scope > colgroup');
+        if (cols && !table.querySelector(':scope > colgroup')) table.insertBefore(copyOf(cols), table.firstChild);
+      }
+    });
+
     window.renderDoc = async (html, css) => {
       const tpl = document.createElement('template');
       tpl.innerHTML = html;
@@ -393,11 +414,14 @@
     });
   }
 
+  function pageWidth() {
+    const [w, h] = PAPER[settings.size] || PAPER.A4;
+    return settings.orientation === 'landscape' ? h : w;
+  }
+
   function currentZoom() {
     if (zoom !== 'fit') return zoom;
-    const [w, h] = PAPER[settings.size] || PAPER.A4;
-    const pageW = settings.orientation === 'landscape' ? h : w;
-    return Math.max(0.25, Math.min(2, (host.clientWidth - 48) / pageW));
+    return Math.max(0.25, Math.min(2, (host.clientWidth - 48) / pageWidth()));
   }
 
   function applyZoom(f) {
@@ -622,8 +646,9 @@ def hello():
       <label class="field">
         <span>${side[0].toUpperCase() + side.slice(1)}</span>
         <select data-k="${key}.slots.${side}">${options(SLOT_OPTIONS, band.slots[side])}</select>
-        ${band.slots[side] === 'custom' ? `<input class="input custom" data-k="${key}.custom.${side}" value="${esc(band.custom[side])}" placeholder="Text">` : ''}
       </label>`).join('');
+    const customs = ['left', 'center', 'right'].filter((side) => band.slots[side] === 'custom').map((side) => `
+      <input class="input custom" data-k="${key}.custom.${side}" value="${esc(band.custom[side])}" placeholder="${side[0].toUpperCase() + side.slice(1)} text, e.g. Page {page} of {pages}">`).join('');
     return `
       <div class="group${band.on ? '' : ' off'}">
         <div class="group-head">
@@ -631,6 +656,7 @@ def hello():
           <label class="switch" title="Show ${label.toLowerCase()}"><input type="checkbox" data-k="${key}.on"${band.on ? ' checked' : ''}><span></span></label>
         </div>
         <div class="slots">${slots}</div>
+        ${customs}
       </div>`;
   }
 

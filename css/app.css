@@ -250,7 +250,8 @@ select, .input {
   outline: none;
 }
 select:focus, .input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-.input.custom { margin-top: 4px; }
+.input.custom { margin-top: 8px; }
+.group.off .input.custom { opacity: .4; pointer-events: none; }
 
 .check { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; margin-top: 4px; }
 .check input { accent-color: var(--accent); width: 15px; height: 15px; margin: 0; }
